@@ -14,7 +14,9 @@ _mats = {}
 
 
 # ---------------------------------------------------------------- helpers
-def reset(res=(1280, 720), samples=4):
+def reset(res=None, samples=None):
+    res = res or tuple(int(v) for v in os.environ.get("RES", "1280x720").split("x"))
+    samples = samples or int(os.environ.get("SAMPLES", "4"))
     bpy.ops.wm.read_factory_settings(use_empty=True)
     _mats.clear()
     _meshes.clear()
@@ -879,5 +881,5 @@ if __name__ == "__main__":
         sc.render.filepath = os.path.join(out, name + ".png")
         bpy.ops.render.render(write_still=True)
     else:
-        sc.frame_step = 2  # rendered at 15 fps, motion-interpolated to 30 fps afterwards
+        sc.frame_step = int(os.environ.get("STEP", "2"))  # rendered at 30/STEP fps, motion-interpolated to 30 fps
         bpy.ops.render.render(animation=True)
