@@ -221,15 +221,16 @@ def mg_frame(t, variant=0):
     return im
 
 
-@lru_cache(1)
-def studio_bg():
-    p = os.path.join(RENDERS, "studiobg", "studiobg.png")
+@lru_cache(2)
+def studio_bg(variant="A"):
+    """3D-rendered DMart studio set (scenes3d.py studioA/B) behind the keyed presenter."""
+    p = os.path.join(RENDERS, "studio", f"studio{variant}.png")
     if os.path.exists(p):
-        im = Image.open(p).convert("RGB").resize((int(W * 1.12), int(H * 1.12)), Image.LANCZOS)
-        im = im.filter(ImageFilter.GaussianBlur(9))
-        arr = np.asarray(im).astype(np.float32) * 0.72
+        im = Image.open(p).convert("RGB").resize((int(W * 1.08), int(H * 1.08)), Image.LANCZOS)
+        im = im.filter(ImageFilter.GaussianBlur(2.2))  # shallow depth-of-field feel, set stays readable
+        arr = np.asarray(im).astype(np.float32) * 0.9
         return Image.fromarray(arr.clip(0, 255).astype(np.uint8)).convert("RGBA")
-    return mg_bg(0).resize((int(W * 1.12), int(H * 1.12)))
+    return mg_bg(0).resize((int(W * 1.08), int(H * 1.08)))
 
 
 # ------------------------------------------------------------------ presenter (chroma key)
@@ -292,7 +293,7 @@ def key_presenter(rgb):
 
 
 def presenter_frame(src_rgb, t_local, dur, shift=0.0, zoom_dir=1):
-    bgs = studio_bg()
+    bgs = studio_bg("A" if zoom_dir > 0 else "B")
     # slow drift on background
     k = t_local / max(dur, 0.1)
     ox = int((bgs.width - W) * (0.5 + 0.3 * math.sin(k * 1.4 + zoom_dir)))

@@ -2,7 +2,7 @@
 # Render every 3D scene (Cycles, 15 fps) then motion-interpolate each to 30 fps PNGs.
 R=${RENDERS:-/tmp/renders}
 cd "$(dirname "$0")"
-python3 scenes3d.py studiobg "$R/studiobg" > "$R/log_studiobg.txt" 2>&1
+for v in studioA studioB; do python3 scenes3d.py $v "$R/studio" > "$R/log_$v.txt" 2>&1; done
 for s in exterior aisleA twin growth money three aisleB cart owned warehouse podium; do
   python3 scenes3d.py $s "$R/raw_$s" > "$R/log_$s.txt" 2>&1
   mkdir -p "$R/$s"

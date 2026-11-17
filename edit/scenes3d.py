@@ -810,12 +810,54 @@ def sc_podium():
            [(1, (0, 0, 2.6)), (285, (0, 0, 3.4))], 285, lens=35)
 
 
-def sc_studiobg():
-    reset(res=(1920, 1080), samples=48)
-    rng = random.Random(21)
-    _aisle_scene(rng)
-    camera([(1, (0.0, 1.5, 1.6))], [(1, (0, 20, 1.5))], 1, lens=24, dof=1.2)
-    bpy.context.scene.camera.data.dof.focus_distance = 0.5
+def _studio_set():
+    """Virtual 3D DMart studio placed behind the keyed presenter."""
+    world_color((0.01, 0.02, 0.015), None, 1.0)
+    plane((0, 0, 0), (60, 60), mat("studiofloor2", (0.03, 0.05, 0.04), 0.18, 0.2))
+    box((0, 6, 4), (40, 0.3, 8), mat("studiowall", (0.035, 0.075, 0.055), 0.6))
+    strip = mat("wallstrip", (0.1, 1, 0.45), 0.5, emit=3.0, emit_color=(0.15, 1.0, 0.5))
+    for i in range(-9, 10):
+        box((i * 2.2, 5.8, 3.2), (0.07, 0.06, 5.0), strip)
+    box((0, 5.8, 0.25), (40, 0.06, 0.05), strip)
+    # branded sign on the wall
+    green = mat("fascia", GREEN, 0.4)
+    white = mat("signwhite", (1, 1, 1), 0.3, emit=2.5)
+    box((4.6, 5.7, 3.3), (4.4, 0.2, 1.5), green, bevel=0.06)
+    text3d("DMart", (4.6, 5.55, 3.3), 1.0, white, extrude=0.06, bevel=0.01)
+    # product shelf facing the camera (built along y, rotated to run along x)
+    before = set(bpy.data.objects)
+    shelf_unit(0, 0, 4.5, 1, random.Random(31), levels=5, height=2.3, depth=0.55)
+    new = [o for o in bpy.data.objects if o not in before and o.parent is None]
+    g = parent_all(new, "shelf")
+    g.rotation_euler.z = math.radians(-90)
+    g.location = (-7.6, 3.8, 0)
+    # cart + stacked boxes on the right
+    cart = parent_all(shopping_cart(0, 0, 0, rng=random.Random(4)), "cart")
+    cart.location = (3.6, 1.6, 0)
+    cart.rotation_euler.z = math.radians(-30)
+    card = mat("card0", (0.55, 0.38, 0.2), 0.85)
+    for i, (x, y, z) in enumerate([(6.2, 3.0, 0.25), (6.8, 3.1, 0.25), (6.5, 3.0, 0.75), (7.4, 3.2, 0.25)]):
+        box((x, y, z), (0.55, 0.55, 0.5), card)
+    # lights
+    area((-4, -4, 5), (0, 3, 1), 800, 6, (1, 0.95, 0.88))
+    area((5, -3, 4), (3, 2, 1), 700, 4, (1, 0.9, 0.75))
+    area((0, 3, 6), (0, 6, 2), 450, 10, (0.5, 1.0, 0.7))
+
+
+def sc_studioA():
+    reset(res=(1920, 1080), samples=16)
+    _studio_set()
+    camera([(1, (0.0, -6.5, 1.6))], [(1, (0, 2, 1.6))], 1, lens=30, dof=4.0)
+    bpy.context.scene.camera.data.dof.focus_object = None
+    bpy.context.scene.camera.data.dof.focus_distance = 6.5
+
+
+def sc_studioB():
+    reset(res=(1920, 1080), samples=16)
+    _studio_set()
+    camera([(1, (2.2, -6.0, 1.8))], [(1, (0.8, 2, 1.5))], 1, lens=34, dof=4.0)
+    bpy.context.scene.camera.data.dof.focus_object = None
+    bpy.context.scene.camera.data.dof.focus_distance = 6.2
 
 
 SCENES = {k[3:]: v for k, v in globals().items() if k.startswith("sc_")}
@@ -833,8 +875,8 @@ if __name__ == "__main__":
             sc.frame_set(f)
             sc.render.filepath = os.path.join(out, f"test_{f:04d}.png")
             bpy.ops.render.render(write_still=True)
-    elif name == "studiobg":
-        sc.render.filepath = os.path.join(out, "studiobg.png")
+    elif name.startswith("studio"):
+        sc.render.filepath = os.path.join(out, name + ".png")
         bpy.ops.render.render(write_still=True)
     else:
         sc.frame_step = 2  # rendered at 15 fps, motion-interpolated to 30 fps afterwards
