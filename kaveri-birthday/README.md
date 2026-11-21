@@ -6,7 +6,7 @@
 |---|---|
 | 0–5 s | Golden particles + light rays — "A Special Day For Someone Special…" |
 | 5–10 s | Flash + burst reveal — ✨ KAVERI ✨, balloons, "22 • 11" |
-| 10–17.5 s | Photo (waving) — "Happy Birthday, Kaveri!" + cake |
+| 10–17.5 s | Cut-out (waving) — "Happy Birthday, Kaveri!" + cake |
 | 17.5–25 s | Photo (floral dress) — "May your life always be filled with…" |
 | 25–32.5 s | Photo (with the pot) — "May all your dreams come true…" |
 | 32.5–40 s | Photo (costume) — "Keep smiling, keep shining…" ✨ |
@@ -23,3 +23,6 @@ traditional *Happy Birthday* melody (public domain) on music box; firework sound
 ```
 Preview live in a browser: serve this folder and open `scene.html?preview`.
 Fonts: Great Vibes, Cinzel, Cormorant Garamond (SIL Open Font License).
+
+Photo backgrounds are removed with `cutout.py` (rembg, `isnet-general-use` model) into `cutouts/`;
+she is then placed on the golden-purple set with a rim glow, halo and gold arch.
