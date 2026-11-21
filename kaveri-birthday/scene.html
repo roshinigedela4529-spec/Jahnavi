@@ -1,0 +1,742 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Kaveri Birthday</title>
+<style>
+  @font-face { font-family: 'GreatVibes'; src: url('fonts/GreatVibes-Regular.ttf'); }
+  @font-face { font-family: 'Cinzel'; src: url('fonts/Cinzel.ttf'); font-weight: 400 900; }
+  @font-face { font-family: 'Cormorant'; src: url('fonts/CormorantGaramond-Italic.ttf'); font-style: italic; font-weight: 300 700; }
+  html, body { margin: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  /* preview mode: scale to fit window */
+  body.preview { display: flex; align-items: center; justify-content: center; height: 100vh; }
+  body.preview canvas { height: 100vh; width: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+// ============================================================================
+//  Kaveri — cinematic birthday greeting. Every frame is a pure function of t,
+//  so the renderer can step through time deterministically.
+// ============================================================================
+const W = 1080, H = 1920, FPS = 30;
+const DURATION = 63;
+const BEAT = 60 / 96;              // music tempo (must match music.py)
+const cv = document.getElementById('c');
+let ctx = cv.getContext('2d');
+
+// ---------- timeline (seconds) ----------
+const T = {
+  introEnd: 5, nameEnd: 10,
+  p1: [10, 17.5], p2: [17.5, 25], p3: [25, 32.5], p4: [32.5, 40],
+  date: [40, 45], collage: [45, 50], end: [50, 63],
+};
+const CUTS = [5, 10, 17.5, 25, 32.5, 40, 45, 50];
+
+// ---------- helpers ----------
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+const ss = (a, b, x) => { const k = clamp((x - a) / (b - a)); return k * k * (3 - 2 * k); };
+const easeOut = k => 1 - Math.pow(1 - clamp(k), 3);
+const easeInOut = k => { k = clamp(k); return k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; };
+const easeBack = k => { k = clamp(k); const c = 1.6; return 1 + (c + 1) * Math.pow(k - 1, 3) + c * Math.pow(k - 1, 2); };
+function rng(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const win = (t, a, b, fi = .5, fo = .5) => ss(a - fi / 2, a + fi / 2, t) * (1 - ss(b - fo / 2, b + fo / 2, t));
+function mk(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+const GOLD = ['#fff6d5', '#ffd97a', '#e8b04a', '#b8862b', '#ffe9a8'];
+const PINK = '#ff7eb6', PURPLE = '#a66bff', LAVENDER = '#d8b4ff';
+
+// ---------- sprites ----------
+function glowSprite(color, size = 128, hard = 0) {
+  const c = mk(size, size), g = c.getContext('2d');
+  const r = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  r.addColorStop(0, '#ffffff'); r.addColorStop(hard ? .15 : .05, color);
+  r.addColorStop(hard ? .45 : .35, color.replace(/[\d.]+\)$/, '0.35)'));
+  r.addColorStop(1, color.replace(/[\d.]+\)$/, '0)'));
+  g.fillStyle = r; g.fillRect(0, 0, size, size); return c;
+}
+function bokehSprite(color, size = 256) {
+  const c = mk(size, size), g = c.getContext('2d');
+  const r = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  r.addColorStop(0, color.replace(/[\d.]+\)$/, '0.55)')); r.addColorStop(.7, color.replace(/[\d.]+\)$/, '0.4)'));
+  r.addColorStop(.86, color.replace(/[\d.]+\)$/, '0.55)')); r.addColorStop(1, color.replace(/[\d.]+\)$/, '0)'));
+  g.fillStyle = r; g.beginPath(); g.arc(size / 2, size / 2, size / 2, 0, 7); g.fill(); return c;
+}
+function starSprite(size = 160) {
+  const c = mk(size, size), g = c.getContext('2d'), m = size / 2;
+  g.drawImage(glowSprite('rgba(255,210,120,1)', size), 0, 0);
+  g.fillStyle = '#fffbe8';
+  g.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4 - Math.PI / 2, r = i % 2 ? size * .06 : size * .48;
+    g.lineTo(m + Math.cos(a) * r, m + Math.sin(a) * r);
+  }
+  g.closePath(); g.fill(); return c;
+}
+const SPR = {
+  gold: glowSprite('rgba(255,200,90,1)', 64),
+  goldHard: glowSprite('rgba(255,215,120,1)', 64, 1),
+  pink: glowSprite('rgba(255,120,190,1)', 64),
+  white: glowSprite('rgba(255,245,230,1)', 64, 1),
+  flame: glowSprite('rgba(255,170,60,1)', 256),
+  bokehP: bokehSprite('rgba(255,120,190,1)'),
+  bokehV: bokehSprite('rgba(170,110,255,1)'),
+  bokehG: bokehSprite('rgba(255,205,110,1)'),
+  star: starSprite(),
+};
+
+// vignette
+const VIG = (() => {
+  const c = mk(W, H), g = c.getContext('2d');
+  const r = g.createRadialGradient(W / 2, H * .48, H * .25, W / 2, H / 2, H * .75);
+  r.addColorStop(0, 'rgba(0,0,0,0)'); r.addColorStop(1, 'rgba(5,0,12,0.85)');
+  g.fillStyle = r; g.fillRect(0, 0, W, H); return c;
+})();
+
+// ---------- photos ----------
+const PHOTO_DEF = [
+  { src: 'photos/p1_waving.jpg', fx: .53, fy: .36 },
+  { src: 'photos/p4_floral.jpg', fx: .50, fy: .36 },
+  { src: 'photos/p2_pot.jpg', fx: .52, fy: .30 },
+  { src: 'photos/p3_costume.jpg', fx: .47, fy: .34 },
+];
+const PH = [];
+function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; }); }
+async function preparePhotos() {
+  for (const d of PHOTO_DEF) {
+    const img = await loadImg(d.src);
+    // colour grade: lift the dim phone shots, warm them, add gentle contrast
+    const gw = img.width, gh = img.height;
+    const graded = mk(gw, gh), g = graded.getContext('2d');
+    g.filter = 'brightness(1.12) contrast(1.12) saturate(1.18)';
+    g.drawImage(img, 0, 0);
+    g.filter = 'none';
+    g.globalCompositeOperation = 'soft-light';
+    g.fillStyle = 'rgba(255,170,190,0.35)'; g.fillRect(0, 0, gw, gh);   // pink-warm grade
+    g.globalCompositeOperation = 'source-over';
+    const lg = g.createRadialGradient(gw * d.fx, gh * d.fy, 0, gw * d.fx, gh * d.fy, gh * .8);
+    lg.addColorStop(0, 'rgba(255,230,200,0.10)'); lg.addColorStop(1, 'rgba(40,0,50,0.28)');
+    g.fillStyle = lg; g.fillRect(0, 0, gw, gh);
+    // blurred backdrop (cover the full frame)
+    const bg = mk(W, H), b = bg.getContext('2d');
+    b.filter = 'blur(40px) brightness(0.55) saturate(1.3)';
+    const s = Math.max(W / gw, H / gh) * 1.15;
+    b.drawImage(graded, (W - gw * s) / 2, (H - gh * s) / 2, gw * s, gh * s);
+    b.filter = 'none';
+    b.fillStyle = 'rgba(60,10,70,0.35)'; b.fillRect(0, 0, W, H);
+    PH.push({ ...d, img: graded, bg });
+  }
+}
+
+// ---------- reusable text renderer (gold gradient + shimmer sweep) ----------
+const TXT = mk(2400, 700), tx = TXT.getContext('2d');
+function fancyText(str, x, y, o) {
+  o = Object.assign({ font: 'Cinzel', size: 100, weight: 400, style: 'normal', spacing: 0, alpha: 1,
+    fill: 'gold', shimmer: -1, glow: 30, glowColor: 'rgba(255,190,90,0.9)', scale: 1, blur: 0 }, o);
+  if (o.alpha <= 0.002) return;
+  tx.setTransform(1, 0, 0, 1, 0, 0);
+  tx.clearRect(0, 0, TXT.width, TXT.height);
+  tx.font = `${o.style} ${o.weight} ${o.size}px ${o.font}`;
+  tx.letterSpacing = o.spacing + 'px';
+  tx.textAlign = 'center'; tx.textBaseline = 'middle';
+  const w = tx.measureText(str).width;
+  const cx = TXT.width / 2, cy = TXT.height / 2;
+  let fill;
+  if (o.fill === 'gold') {
+    fill = tx.createLinearGradient(0, cy - o.size * .6, 0, cy + o.size * .6);
+    fill.addColorStop(0, '#fff7d6'); fill.addColorStop(.35, '#ffd877'); fill.addColorStop(.55, '#e0a43c');
+    fill.addColorStop(.75, '#ffe39a'); fill.addColorStop(1, '#b97f25');
+  } else if (o.fill === 'rose') {
+    fill = tx.createLinearGradient(0, cy - o.size * .6, 0, cy + o.size * .6);
+    fill.addColorStop(0, '#fff0f8'); fill.addColorStop(.5, '#ffc2e0'); fill.addColorStop(1, '#e9a6ff');
+  } else fill = o.fill;
+  tx.fillStyle = fill;
+  tx.fillText(str, cx, cy);
+  if (o.shimmer >= 0 && o.shimmer <= 1) {
+    tx.globalCompositeOperation = 'source-atop';
+    const sx = cx - w / 2 - 300 + (w + 600) * o.shimmer;
+    const sg = tx.createLinearGradient(sx - 140, 0, sx + 140, 0);
+    sg.addColorStop(0, 'rgba(255,255,255,0)'); sg.addColorStop(.5, 'rgba(255,255,255,0.95)'); sg.addColorStop(1, 'rgba(255,255,255,0)');
+    tx.fillStyle = sg; tx.fillRect(0, 0, TXT.width, TXT.height);
+    tx.globalCompositeOperation = 'source-over';
+  }
+  ctx.save();
+  ctx.globalAlpha = o.alpha;
+  ctx.translate(x, y); ctx.scale(o.scale, o.scale);
+  if (o.blur > 0.3) ctx.filter = `blur(${o.blur}px)`;
+  if (o.glow) { ctx.shadowColor = o.glowColor; ctx.shadowBlur = o.glow; }
+  ctx.drawImage(TXT, -cx, -cy);
+  ctx.restore();
+  return w;
+}
+
+// word-by-word reveal of a wrapped paragraph
+function wrap(str, font, maxW) {
+  ctx.save(); ctx.font = font; ctx.letterSpacing = '0px';
+  const words = str.split(' '), lines = []; let cur = '';
+  for (const wd of words) { const tst = cur ? cur + ' ' + wd : wd; if (ctx.measureText(tst).width > maxW && cur) { lines.push(cur); cur = wd; } else cur = tst; }
+  if (cur) lines.push(cur); ctx.restore(); return lines;
+}
+function paragraph(str, cx, cy, size, t0, t, alphaAll, opts = {}) {
+  const font = `italic 500 ${size}px Cormorant`;
+  const lines = wrap(str, font, opts.maxW || 900);
+  const lh = size * 1.25;
+  let idx = 0;
+  ctx.save(); ctx.font = font; ctx.letterSpacing = '0px';
+  const space = ctx.measureText(' ').width;
+  lines.forEach((ln, li) => {
+    const ws = ln.split(' ');
+    const lw = ctx.measureText(ln).width;
+    let x = cx - lw / 2;
+    const y = cy + (li - (lines.length - 1) / 2) * lh;
+    for (const wd of ws) {
+      const ww = ctx.measureText(wd).width;
+      const k = easeOut((t - t0 - idx * 0.09) / 0.7);
+      if (k > 0) {
+        ctx.restore();
+        fancyText(wd, x + ww / 2, y + (1 - k) * 26, { font: 'Cormorant', style: 'italic', weight: 500, size,
+          fill: opts.fill || 'rose', alpha: k * alphaAll, glow: 18, glowColor: 'rgba(255,120,200,0.55)', blur: (1 - k) * 8 });
+        ctx.save(); ctx.font = font; ctx.letterSpacing = '0px';
+      }
+      x += ww + space; idx++;
+    }
+  });
+  ctx.restore();
+}
+
+// ---------- ambient layers ----------
+const BOKEH = (() => { const r = rng(7), a = []; for (let i = 0; i < 34; i++) a.push({ x: r() * W, y: r() * H, s: 60 + r() * 220, sp: 6 + r() * 20, ph: r() * 6.28, k: (r() * 3) | 0, a: .12 + r() * .25 }); return a; })();
+const DUST = (() => { const r = rng(11), a = []; for (let i = 0; i < 220; i++) a.push({ x: r() * W, y: r() * H, s: 4 + r() * 18, sp: 15 + r() * 60, dr: (r() - .5) * 30, ph: r() * 6.28, tw: 1 + r() * 3, pink: r() < .25 }); return a; })();
+
+function background(t, tint = 0) {
+  const g = ctx.createRadialGradient(W / 2, H * .42, 50, W / 2, H * .5, H * .9);
+  g.addColorStop(0, tint ? '#4a1640' : '#3b1250'); g.addColorStop(.5, '#1d0a33'); g.addColorStop(1, '#07020f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function bokeh(t, alpha = 1) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const b of BOKEH) {
+    const y = ((b.y - t * b.sp) % (H + 400) + H + 400) % (H + 400) - 200;
+    const x = b.x + Math.sin(t * .3 + b.ph) * 40;
+    ctx.globalAlpha = b.a * alpha * (.7 + .3 * Math.sin(t * .8 + b.ph));
+    ctx.drawImage([SPR.bokehP, SPR.bokehV, SPR.bokehG][b.k], x - b.s / 2, y - b.s / 2, b.s, b.s);
+  }
+  ctx.restore();
+}
+function dust(t, alpha = 1, speed = 1) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const d of DUST) {
+    const y = ((d.y - t * d.sp * speed) % (H + 100) + H + 100) % (H + 100) - 50;
+    const x = d.x + Math.sin(t * .5 + d.ph) * d.dr;
+    const tw = .5 + .5 * Math.sin(t * d.tw * 2 + d.ph);
+    ctx.globalAlpha = alpha * (.25 + .75 * tw);
+    const s = d.s * (.6 + .4 * tw);
+    ctx.drawImage(d.pink ? SPR.pink : SPR.gold, x - s / 2, y - s / 2, s, s);
+  }
+  ctx.restore();
+}
+function lightLeak(t, alpha = 1) {
+  ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = alpha;
+  const spots = [[.1 + .1 * Math.sin(t * .23), .15, 'rgba(255,140,90,0.35)'], [.95, .55 + .15 * Math.sin(t * .17), 'rgba(255,90,170,0.30)'], [.3, .95, 'rgba(160,90,255,0.30)']];
+  for (const [fx, fy, c] of spots) {
+    const g = ctx.createRadialGradient(fx * W, fy * H, 0, fx * W, fy * H, 700);
+    g.addColorStop(0, c); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+}
+function sparkle(x, y, size, alpha, rot = 0) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = clamp(alpha);
+  ctx.translate(x, y); ctx.rotate(rot);
+  ctx.drawImage(SPR.star, -size / 2, -size / 2, size, size); ctx.restore();
+}
+function burst(cx, cy, t, t0, n = 60, seed = 1, power = 700, color = 'gold') {
+  const dt = t - t0; if (dt < 0 || dt > 2.2) return;
+  const r = rng(seed);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + r() * .2, v = power * (.35 + r() * .65);
+    const drag = (1 - Math.exp(-dt * 2.2)) / 2.2;
+    const spr = color === 'mix' ? (i % 3 === 0 ? SPR.pink : SPR.goldHard) : color === 'pink' ? SPR.pink : SPR.goldHard;
+    for (let k = 0; k < 4; k++) {           // short trail
+      const d2 = Math.max(0, dt - k * .035), dr2 = (1 - Math.exp(-d2 * 2.2)) / 2.2;
+      const x = cx + Math.cos(a) * v * dr2, y = cy + Math.sin(a) * v * dr2 + 120 * d2 * d2;
+      const fade = clamp(1 - dt / 2.0) * (1 - k * .22) * (.6 + .4 * Math.sin(dt * 30 + i));
+      ctx.globalAlpha = clamp(fade);
+      const s = (22 - k * 4) * (1 - dt / 2.6);
+      if (s > 0) ctx.drawImage(spr, x - s / 2, y - s / 2, s, s);
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- decorations ----------
+function balloon(x, y, r, col, t, ph) {
+  const sway = Math.sin(t * 1.2 + ph) * .08;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(sway);
+  // string
+  ctx.strokeStyle = 'rgba(255,230,200,0.5)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, r * 1.18);
+  for (let i = 1; i <= 10; i++) ctx.lineTo(Math.sin(i * .9 + t * 2 + ph) * 8, r * 1.18 + i * r * .32);
+  ctx.stroke();
+  const g = ctx.createRadialGradient(-r * .35, -r * .45, r * .1, 0, 0, r * 1.3);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(.18, col[0]); g.addColorStop(1, col[1]);
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.ellipse(0, 0, r, r * 1.18, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-r * .12, r * 1.25); ctx.lineTo(r * .12, r * 1.25); ctx.lineTo(0, r * 1.12); ctx.fill();
+  ctx.globalAlpha = .5; ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(-r * .38, -r * .5, r * .14, r * .26, -.5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+const BCOL = [['#ff9ccc', '#b0246a'], ['#c9a2ff', '#5a23a8'], ['#ffe08a', '#a8701a'], ['#ffb3d9', '#c2386f'], ['#e5c7ff', '#6b2fb5']];
+const BALLOONS = (() => { const r = rng(23), a = []; for (let i = 0; i < 14; i++) { const left = i % 2 === 0; a.push({ x: left ? 30 + r() * 170 : W - 30 - r() * 170, d: r() * 4, sp: 120 + r() * 90, r: 55 + r() * 40, c: BCOL[i % 5], ph: r() * 6 }); } return a; })();
+function balloons(t, t0, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  for (const b of BALLOONS) {
+    const dt = t - t0 - b.d; if (dt < 0) continue;
+    const y = H + 200 - dt * b.sp; if (y < -400) continue;
+    balloon(b.x + Math.sin(dt * .7 + b.ph) * 30, y, b.r, b.c, t, b.ph);
+  }
+  ctx.restore();
+}
+function flowerCorner(x, y, s, t, flip) {
+  // small stylised 5-petal blossoms clustered in a corner
+  const r = rng(flip ? 91 : 37);
+  ctx.save(); ctx.translate(x, y); if (flip) ctx.scale(-1, -1);
+  for (let i = 0; i < 7; i++) {
+    const fx = r() * 230, fy = r() * 230, fs = s * (.5 + r() * .7), rot = t * .15 + r() * 6;
+    if (fx + fy > 300) continue;
+    ctx.save(); ctx.translate(fx, fy); ctx.rotate(rot);
+    const col = i % 3 === 0 ? '#ffd27a' : i % 3 === 1 ? '#ff9cc8' : '#d7b2ff';
+    for (let p = 0; p < 5; p++) {
+      ctx.rotate(Math.PI * 2 / 5);
+      const g = ctx.createRadialGradient(0, -fs * .5, 0, 0, -fs * .5, fs * .6);
+      g.addColorStop(0, '#fff'); g.addColorStop(.4, col); g.addColorStop(1, col + '00');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, -fs * .45, fs * .28, fs * .48, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = '#ffe9a8'; ctx.beginPath(); ctx.arc(0, 0, fs * .12, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function heart(x, y, s, alpha, t) {
+  const p = 1 + .06 * Math.sin(t * 7);
+  ctx.save(); ctx.translate(x, y); ctx.scale(s * p / 100, s * p / 100); ctx.globalAlpha = alpha;
+  const g = ctx.createLinearGradient(0, -60, 0, 60); g.addColorStop(0, '#ff8fbf'); g.addColorStop(1, '#d4145a');
+  ctx.fillStyle = g; ctx.shadowColor = 'rgba(255,60,140,0.9)'; ctx.shadowBlur = 40;
+  ctx.beginPath(); ctx.moveTo(0, 30);
+  ctx.bezierCurveTo(-90, -30, -45, -95, 0, -45); ctx.bezierCurveTo(45, -95, 90, -30, 0, 30);
+  ctx.fill();
+  ctx.shadowBlur = 0; ctx.globalAlpha = alpha * .6; ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.ellipse(-32, -45, 10, 16, -.6, 0, 7); ctx.fill();
+  ctx.restore();
+}
+function cake(cx, base, s, t, lit) {
+  ctx.save(); ctx.translate(cx, base); ctx.scale(s, s);
+  // plate
+  let g = ctx.createLinearGradient(-330, 0, 330, 0);
+  g.addColorStop(0, '#8a5a17'); g.addColorStop(.5, '#ffe7a0'); g.addColorStop(1, '#8a5a17');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 0, 330, 46, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#5a3a10'; ctx.fillRect(-40, 0, 80, 60); ctx.beginPath(); ctx.ellipse(0, 62, 120, 20, 0, 0, 7); ctx.fill();
+  const tier = (w, h, y, c1, c2, drip) => {
+    const gg = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+    gg.addColorStop(0, c2); gg.addColorStop(.35, c1); gg.addColorStop(.6, c1); gg.addColorStop(1, c2);
+    ctx.fillStyle = gg;
+    ctx.beginPath(); ctx.ellipse(0, y, w / 2, w * .09, 0, 0, Math.PI); ctx.lineTo(-w / 2, y - h); ctx.lineTo(w / 2, y - h); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = drip; ctx.beginPath(); ctx.ellipse(0, y - h, w / 2, w * .09, 0, 0, 7); ctx.fill();
+    // drips
+    ctx.beginPath(); ctx.moveTo(-w / 2, y - h);
+    for (let i = 0; i <= 14; i++) { const x = -w / 2 + i * w / 14, a = i / 14 * Math.PI; const d = 22 + 26 * Math.abs(Math.sin(i * 2.3)); ctx.lineTo(x, y - h + Math.sin(a) * w * .09 + d); }
+    ctx.lineTo(w / 2, y - h); ctx.closePath(); ctx.fill();
+    // gold beads
+    for (let i = 0; i < 18; i++) { const a = Math.PI - i / 17 * Math.PI; const bx = Math.cos(a) * w / 2 * .98, by = y + Math.sin(a) * w * .09 - 8; ctx.fillStyle = '#ffd877'; ctx.beginPath(); ctx.arc(bx, by, 7, 0, 7); ctx.fill(); ctx.fillStyle = '#fff6d5'; ctx.beginPath(); ctx.arc(bx - 2, by - 2, 2.5, 0, 7); ctx.fill(); }
+  };
+  tier(560, 190, -20, '#f7a8cf', '#a8336f', '#fff0f7');
+  tier(400, 160, -210, '#d9b8ff', '#6d36b8', '#fdf3ff');
+  // candles
+  const cs = [-120, -60, 0, 60, 120];
+  cs.forEach((x, i) => {
+    const y0 = -370 - 4;
+    const cg = ctx.createLinearGradient(x - 9, 0, x + 9, 0); cg.addColorStop(0, '#d9a0ff'); cg.addColorStop(.5, '#fff'); cg.addColorStop(1, '#d986b3');
+    ctx.fillStyle = cg; ctx.fillRect(x - 9, y0 - 110, 18, 110);
+    ctx.strokeStyle = 'rgba(255,120,180,0.8)'; ctx.lineWidth = 4;
+    for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.moveTo(x - 9, y0 - 15 - k * 22); ctx.lineTo(x + 9, y0 - 25 - k * 22); ctx.stroke(); }
+    const L = clamp(lit - i * .12);
+    if (L > 0) {
+      const fl = 1 + .12 * Math.sin(t * 13 + i * 2) + .08 * Math.sin(t * 23 + i);
+      const fy = y0 - 130;
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = L;
+      ctx.drawImage(SPR.flame, x - 90 * fl, fy - 90 * fl, 180 * fl, 180 * fl);
+      ctx.restore();
+      ctx.save(); ctx.globalAlpha = L; ctx.translate(x, fy); ctx.scale(L * fl, L * fl);
+      const fg = ctx.createRadialGradient(0, 6, 1, 0, 0, 28); fg.addColorStop(0, '#fff'); fg.addColorStop(.4, '#ffe08a'); fg.addColorStop(1, '#ff7a20');
+      ctx.fillStyle = fg; ctx.beginPath(); ctx.moveTo(0, -34 + Math.sin(t * 17 + i) * 3); ctx.quadraticCurveTo(15, 0, 0, 14); ctx.quadraticCurveTo(-15, 0, 0, -34 + Math.sin(t * 17 + i) * 3); ctx.fill();
+      ctx.restore();
+    }
+  });
+  ctx.restore();
+}
+
+// ---------- photo card ----------
+function photoCard(p, t, t0, dur, alpha, cfg = {}) {
+  const lt = t - t0, k = lt / dur;
+  const cw = cfg.w || 820, ch = cw * 4 / 3;
+  const cx = W / 2, cy = cfg.cy || 800;
+  const enter = easeOut(lt / 1.2);
+  const sc = lerp(1.08, 1, enter) * (1 + .015 * Math.sin(lt * .9));
+  const rot = (cfg.rot || 0) * (1 - enter) + Math.sin(lt * .6) * .006;
+  // backdrop
+  ctx.save(); ctx.globalAlpha = alpha;
+  const bs = 1.05 + .05 * k;
+  ctx.drawImage(p.bg, (W - W * bs) / 2, (H - H * bs) / 2, W * bs, H * bs);
+  ctx.restore();
+  bokeh(t, alpha * .8);
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.translate(cx, cy + (1 - enter) * 40); ctx.rotate(rot); ctx.scale(sc, sc);
+  // glow behind card
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha * .55;
+  ctx.drawImage(SPR.gold, -cw * .75, -ch * .7, cw * 1.5, ch * 1.4); ctx.restore();
+  // gold frame
+  const r = 28, pad = 14;
+  const fg = ctx.createLinearGradient(-cw / 2, -ch / 2, cw / 2, ch / 2);
+  fg.addColorStop(0, '#fff3c4'); fg.addColorStop(.3, '#d89b35'); fg.addColorStop(.55, '#ffe8a3'); fg.addColorStop(.8, '#b57a22'); fg.addColorStop(1, '#ffeab0');
+  ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 20;
+  ctx.fillStyle = fg; ctx.beginPath(); ctx.roundRect(-cw / 2 - pad, -ch / 2 - pad, cw + pad * 2, ch + pad * 2, r + pad); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  // ken-burns photo
+  ctx.save(); ctx.beginPath(); ctx.roundRect(-cw / 2, -ch / 2, cw, ch, r); ctx.clip();
+  const z = 1.04 + .16 * easeInOut(k);
+  const iw = p.img.width, ih = p.img.height, s0 = Math.max(cw / iw, ch / ih) * z;
+  const ox = lerp(.5, p.fx, easeInOut(k)), oy = lerp(.45, p.fy, easeInOut(k));
+  let dx = -iw * s0 * ox + (ox - .5) * cw, dy = -ih * s0 * oy + (oy - .5) * ch;
+  dx = clamp(dx, cw / 2 - iw * s0, -cw / 2); dy = clamp(dy, ch / 2 - ih * s0, -ch / 2);
+  ctx.drawImage(p.img, dx, dy, iw * s0, ih * s0);
+  // inner light sweep
+  const sw = ((lt - .6) / 1.6);
+  if (sw > 0 && sw < 1) {
+    const sx = -cw + sw * cw * 2.4;
+    const lg = ctx.createLinearGradient(sx - 160, -ch / 2, sx + 160, ch / 2);
+    lg.addColorStop(0, 'rgba(255,255,255,0)'); lg.addColorStop(.5, 'rgba(255,240,210,0.35)'); lg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = lg; ctx.fillRect(-cw / 2, -ch / 2, cw, ch);
+  }
+  const ig = ctx.createLinearGradient(0, ch * .15, 0, ch / 2);
+  ig.addColorStop(0, 'rgba(30,0,40,0)'); ig.addColorStop(1, 'rgba(30,0,40,0.35)');
+  ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = ig; ctx.fillRect(-cw / 2, -ch / 2, cw, ch);
+  ctx.restore();
+  // corner sparkles on frame
+  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sy], i) => {
+    sparkle(sx * (cw / 2 + pad), sy * (ch / 2 + pad), 90 + 30 * Math.sin(t * 3 + i * 1.7), alpha * (.6 + .4 * Math.sin(t * 2.4 + i)), t * .5 + i);
+  });
+  ctx.restore();
+  // little name label top
+  fancyText('K A V E R I', W / 2, 150, { size: 44, weight: 600, spacing: 10, alpha: alpha * ss(t0 + .3, t0 + 1.3, t), glow: 20 });
+  flowerCorner(-30, -30, 70, t, false);
+  ctx.save(); ctx.translate(W + 30, H + 30); flowerCorner(0, 0, 70, t, true); ctx.restore();
+}
+function textPanel(alpha) {
+  const g = ctx.createLinearGradient(0, H * .66, 0, H);
+  g.addColorStop(0, 'rgba(15,3,25,0)'); g.addColorStop(.35, 'rgba(15,3,25,0.65)'); g.addColorStop(1, 'rgba(10,2,18,0.9)');
+  ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = g; ctx.fillRect(0, H * .66, W, H * .34); ctx.restore();
+}
+function divider(cx, y, w, alpha) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  const g = ctx.createLinearGradient(cx - w / 2, 0, cx + w / 2, 0);
+  g.addColorStop(0, 'rgba(255,210,120,0)'); g.addColorStop(.5, 'rgba(255,225,150,1)'); g.addColorStop(1, 'rgba(255,210,120,0)');
+  ctx.fillStyle = g; ctx.fillRect(cx - w / 2, y - 1.5, w, 3);
+  ctx.translate(cx, y); ctx.rotate(Math.PI / 4); ctx.fillStyle = '#ffe39a'; ctx.fillRect(-7, -7, 14, 14);
+  ctx.restore();
+}
+
+// ============================ SCENES ============================
+function sceneIntro(t, a) {
+  background(t);
+  const lightUp = ss(0, 2, t);
+  bokeh(t, lightUp * .6 * a);
+  dust(t, lightUp * a, .6);
+  // volumetric rays from top
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .25 * lightUp * a;
+  for (let i = 0; i < 6; i++) {
+    const ang = -.35 + i * .14 + Math.sin(t * .3 + i) * .03;
+    ctx.save(); ctx.translate(W / 2, -100); ctx.rotate(ang);
+    const g = ctx.createLinearGradient(0, 0, 0, H * 1.2); g.addColorStop(0, 'rgba(255,215,150,0.5)'); g.addColorStop(1, 'rgba(255,215,150,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(-20, 0); ctx.lineTo(20, 0); ctx.lineTo(160, H * 1.2); ctx.lineTo(-160, H * 1.2); ctx.fill(); ctx.restore();
+  }
+  ctx.restore();
+  const ta = a * (1 - ss(4.1, 4.8, t));
+  // "A Special Day" letter-by-letter, then "For Someone Special..."
+  const l1 = 'A Special Day', l2 = 'For Someone Special…';
+  const drawLetters = (str, y, size, t0, font, style) => {
+    ctx.save(); ctx.font = `${style} 500 ${size}px ${font}`; ctx.letterSpacing = '0px';
+    const tw = ctx.measureText(str).width; let x = W / 2 - tw / 2; ctx.restore();
+    for (let i = 0; i < str.length; i++) {
+      ctx.save(); ctx.font = `${style} 500 ${size}px ${font}`; const cw = ctx.measureText(str[i]).width; ctx.restore();
+      const k = easeOut((t - t0 - i * .045) / .8);
+      if (str[i] !== ' ' && k > 0) fancyText(str[i], x + cw / 2, y - (1 - k) * 30, { font, style, size, fill: 'gold', alpha: k * ta, blur: (1 - k) * 10, glow: 26, shimmer: (t - 3) / 1.2 });
+      x += cw;
+    }
+  };
+  drawLetters(l1, 860, 130, .6, 'GreatVibes', 'normal');
+  drawLetters(l2, 1040, 84, 1.7, 'Cormorant', 'italic');
+  divider(W / 2, 1160, 520 * easeOut((t - 2.6) / 1), ta);
+  // light gathers to the centre before the name
+  const gather = ss(3.8, 5, t);
+  if (gather > 0) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = gather;
+    const s = 200 + gather * 1600; ctx.drawImage(SPR.gold, W / 2 - s / 2, H * .47 - s / 2, s, s); ctx.restore();
+  }
+  ctx.drawImage(VIG, 0, 0);
+}
+
+function sceneName(t, a) {
+  const lt = t - T.introEnd;
+  background(t, 1);
+  ctx.save(); ctx.globalAlpha = a;
+  bokeh(t, .9); lightLeak(t, .6); balloons(t, 5.3, .9);
+  dust(t, 1, .8);
+  burst(W / 2, H * .47, t, 5.02, 90, 3, 900, 'mix');
+  burst(W / 2, H * .47, t, 5.1, 50, 4, 500, 'gold');
+  // lens flare streak
+  const fl = Math.exp(-Math.pow((lt - .15) / .5, 2)) + .25 * ss(0, 1, lt);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = clamp(fl) * .9;
+  const lg = ctx.createLinearGradient(0, 0, W, 0);
+  lg.addColorStop(0, 'rgba(255,180,220,0)'); lg.addColorStop(.5, 'rgba(255,240,210,0.95)'); lg.addColorStop(1, 'rgba(180,140,255,0)');
+  ctx.fillStyle = lg; ctx.fillRect(0, H * .47 - 4, W, 8);
+  ctx.globalAlpha = clamp(fl) * .4; ctx.fillRect(0, H * .47 - 30, W, 60);
+  ctx.restore();
+  // script "Happy Birthday"
+  fancyText('Happy Birthday', W / 2, H * .47 - 210, { font: 'GreatVibes', size: 120, fill: 'rose', alpha: easeOut((lt - 1.4) / 1) * a, blur: (1 - easeOut((lt - 1.4) / 1)) * 12, glow: 30, glowColor: 'rgba(255,110,190,0.8)' });
+  // KAVERI — letters collapse from wide tracking with a gold shimmer
+  const k = easeOut(lt / 1.6);
+  const spacing = lerp(140, 26, k);
+  fancyText('KAVERI', W / 2, H * .47, { size: 165, weight: 700, spacing, scale: lerp(1.25, 1, k) * (1 + .01 * Math.sin(lt * 2)), alpha: ss(0, .6, lt) * a, blur: (1 - k) * 14, glow: 50, shimmer: ((lt - 1.2) % 2.5) / 1.4 });
+  // flanking sparkles (✨ KAVERI ✨)
+  const sp = easeBack((lt - 1) / .8);
+  sparkle(W / 2 - 480, H * .47 - 10, 130 * sp, a * sp, lt * 1.2);
+  sparkle(W / 2 + 480, H * .47 - 10, 130 * sp, a * sp, -lt * 1.2);
+  sparkle(W / 2 - 440, H * .47 + 80, 60 * sp, a * sp * .8, lt);
+  sparkle(W / 2 + 450, H * .47 - 100, 60 * sp, a * sp * .8, -lt);
+  divider(W / 2, H * .47 + 150, 600 * easeOut((lt - 1.5) / 1), a);
+  fancyText('22 • 11', W / 2, H * .47 + 230, { size: 54, weight: 500, spacing: 14, alpha: ss(2.2, 3, lt) * a, glow: 16 });
+  ctx.restore();
+  ctx.drawImage(VIG, 0, 0);
+}
+
+function photoScene(idx, range, t, a, text) {
+  const [t0, t1] = range;
+  photoCard(PH[idx], t, t0, t1 - t0, a, { rot: idx % 2 ? .04 : -.04 });
+  dust(t, a * .7, .5);
+  textPanel(a);
+  text(t - t0, a);
+  ctx.drawImage(VIG, 0, 0);
+}
+
+function sceneDate(t, a) {
+  const lt = t - T.date[0];
+  background(t);
+  ctx.save(); ctx.globalAlpha = a;
+  bokeh(t, .7); lightLeak(t, .5);
+  // concentric glowing rings
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 3; i++) {
+    const rr = 300 + i * 70 + Math.sin(lt * 1.5 + i) * 8, k = easeOut((lt - i * .2) / 1.2);
+    ctx.strokeStyle = `rgba(255,${200 - i * 30},${140 + i * 40},${.55 - i * .14})`; ctx.lineWidth = 3 - i * .7;
+    ctx.beginPath(); ctx.arc(W / 2, H * .48, rr, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); ctx.stroke();
+  }
+  // orbiting particles
+  for (let i = 0; i < 40; i++) {
+    const ang = i / 40 * Math.PI * 2 + lt * (.3 + (i % 3) * .1), rr = 330 + (i % 5) * 25;
+    const s = 14 + (i % 4) * 6;
+    ctx.globalAlpha = ss(0, 1, lt) * (.5 + .5 * Math.sin(lt * 4 + i));
+    ctx.drawImage(i % 4 ? SPR.goldHard : SPR.pink, W / 2 + Math.cos(ang) * rr - s / 2, H * .48 + Math.sin(ang) * rr - s / 2, s, s);
+  }
+  ctx.restore();
+  dust(t, .8, .6);
+  fancyText('Celebrating Kaveri', W / 2, H * .48 - 470, { font: 'GreatVibes', size: 100, fill: 'rose', alpha: easeOut((lt - .4) / 1), glow: 26, glowColor: 'rgba(255,110,190,0.7)' });
+  const k = easeOut(lt / 1.3);
+  fancyText('22', W / 2 - 165, H * .48, { size: 230, weight: 700, alpha: k, scale: lerp(1.4, 1, k), blur: (1 - k) * 16, glow: 60, shimmer: (lt - 1.4) / 1.3 });
+  fancyText('11', W / 2 + 165, H * .48, { size: 230, weight: 700, alpha: easeOut((lt - .25) / 1.3), scale: lerp(1.4, 1, easeOut((lt - .25) / 1.3)), blur: (1 - easeOut((lt - .25) / 1.3)) * 16, glow: 60, shimmer: (lt - 1.6) / 1.3 });
+  const dp = easeBack((lt - .7) / .6);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = clamp(dp);
+  ctx.drawImage(SPR.goldHard, W / 2 - 50 * dp, H * .48 - 50 * dp, 100 * dp, 100 * dp); ctx.restore();
+  sparkle(W / 2, H * .48, 110 * dp, dp, lt);
+  fancyText('N O V E M B E R', W / 2, H * .48 + 200, { size: 46, weight: 500, spacing: 8, alpha: ss(1.2, 2, lt), glow: 14 });
+  divider(W / 2, H * .48 + 270, 520 * easeOut((lt - 1.5) / 1), 1);
+  fancyText('her special day', W / 2, H * .48 + 360, { font: 'Cormorant', style: 'italic', weight: 500, size: 64, fill: 'rose', alpha: ss(2, 2.8, lt), glow: 14 });
+  ctx.restore();
+  ctx.drawImage(VIG, 0, 0);
+}
+
+function polaroid(p, x, y, w, rot, alpha) {
+  if (alpha <= 0) return;
+  const h = w * 4 / 3, b = w * .06;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.rotate(rot);
+  ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 18;
+  ctx.fillStyle = '#fffaf2'; ctx.fillRect(-w / 2 - b, -h / 2 - b, w + b * 2, h + b * 3.4);
+  ctx.shadowColor = 'transparent';
+  const iw = p.img.width, ih = p.img.height, s = Math.max(w / iw, h / ih) * 1.08;
+  ctx.save(); ctx.beginPath(); ctx.rect(-w / 2, -h / 2, w, h); ctx.clip();
+  ctx.drawImage(p.img, -iw * s * p.fx, -ih * s * (p.fy + .1), iw * s, ih * s); ctx.restore();
+  ctx.restore();
+}
+function sceneCollage(t, a) {
+  const lt = t - T.collage[0];
+  background(t, 1);
+  ctx.save(); ctx.globalAlpha = a;
+  bokeh(t, .8); lightLeak(t, .5);
+  const slots = [[300, 470, -.07, 1], [780, 520, .06, 0], [310, 1050, .05, 3], [775, 1090, -.06, 2]];
+  slots.forEach(([x, y, r, pi], i) => {
+    const k = easeBack((lt - i * BEAT * .8) / .7);
+    const fromX = i % 2 ? W + 400 : -400;
+    polaroid(PH[pi], lerp(fromX, x, k), y + Math.sin(t * .8 + i) * 8, 400, r + (1 - clamp(k)) * (i % 2 ? .5 : -.5), a * clamp(k * 2));
+  });
+  dust(t, .9, .7);
+  textPanel(1);
+  const nk = easeOut((lt - 2.2) / 1.2);
+  fancyText('KAVERI', W / 2, 1560, { size: 150, weight: 700, spacing: lerp(80, 20, nk), alpha: nk, blur: (1 - nk) * 12, glow: 46, shimmer: (lt - 3) / 1.4 });
+  sparkle(W / 2 - 360, 1545, 110 * easeBack((lt - 2.8) / .6), nk, t);
+  sparkle(W / 2 + 360, 1545, 110 * easeBack((lt - 2.8) / .6), nk, -t);
+  fancyText('our little sunshine', W / 2, 1700, { font: 'GreatVibes', size: 84, fill: 'rose', alpha: ss(3, 3.8, lt), glow: 22, glowColor: 'rgba(255,110,190,0.7)' });
+  ctx.restore();
+  ctx.drawImage(VIG, 0, 0);
+}
+
+const FIREWORKS = (() => { const r = rng(99), a = []; for (let i = 0; i < 16; i++) a.push({ t: 51.4 + i * BEAT * 1.4 + r() * .2, x: 140 + r() * (W - 280), y: 250 + r() * 650, n: 50 + (r() * 40 | 0), p: 380 + r() * 380, c: ['gold', 'mix', 'gold', 'pink'][i % 4], seed: 100 + i }); return a; })();
+function sceneEnd(t, a) {
+  const lt = t - T.end[0];
+  background(t, 1);
+  ctx.save(); ctx.globalAlpha = a;
+  bokeh(t, .9); lightLeak(t, .7);
+  // fireworks with rising rockets
+  for (const f of FIREWORKS) {
+    const rt = t - (f.t - .7);
+    if (rt > 0 && rt < .7) {
+      const k = rt / .7, x = f.x + Math.sin(k * 6) * 6, y = lerp(H + 50, f.y, easeOut(k));
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      for (let j = 0; j < 6; j++) { ctx.globalAlpha = .9 - j * .14; const s = 18 - j * 2; ctx.drawImage(SPR.goldHard, x - s / 2, y + j * 18 - s / 2, s, s); }
+      ctx.restore();
+    }
+    burst(f.x, f.y, t, f.t, f.n, f.seed, f.p, f.c);
+  }
+  balloons(t, 51.5, .95);
+  dust(t, 1, .7);
+  // cake rises in
+  const ck = easeOut((lt - .2) / 1.4);
+  const lit = clamp((lt - 1.2) / 1.2) * 1.5;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = .55 * clamp(lit);
+  ctx.drawImage(SPR.gold, W / 2 - 600, 900 - 500, 1200, 1000); ctx.restore();
+  cake(W / 2, lerp(H + 500, 1420, ck), 1.15, t, lit);
+  // headline
+  const hk = easeOut((lt - 2.3) / 1.2);
+  fancyText('Happy Birthday', W / 2, 260, { font: 'GreatVibes', size: 150, fill: 'rose', alpha: hk, blur: (1 - hk) * 14, glow: 34, glowColor: 'rgba(255,110,190,0.85)' });
+  const kk = easeOut((lt - 3) / 1.3);
+  const kw = fancyText('Kaveri', W / 2 - 50, 440, { font: 'GreatVibes', size: 190, alpha: kk, blur: (1 - kk) * 14, glow: 50, shimmer: ((lt - 4) % 3) / 1.5 }) || 380;
+  heart(W / 2 - 50 + kw / 2 + 70, 440, 95 * easeBack((lt - 3.8) / .6), clamp((lt - 3.8) / .3), t);
+  // closing wish
+  textPanel(ss(54, 55.5, t));
+  paragraph('Wishing you a beautiful year ahead!', W / 2, 1640, 72, 52.5 + 3.6, t, 1, { fill: 'gold', maxW: 960 });
+  divider(W / 2, 1730, 560 * easeOut((lt - 5.5) / 1), 1);
+  // final shimmer sparkles
+  for (let i = 0; i < 6; i++) { const st = 57 + i * .55; const k = Math.sin(clamp((t - st) / 1.1) * Math.PI); sparkle(150 + ((i * 337) % 780), 160 + ((i * 523) % 1500), 120 * k, k, t); }
+  ctx.restore();
+  ctx.drawImage(VIG, 0, 0);
+}
+
+// ---------- texts for photo scenes ----------
+const MSG1 = 'May your life always be filled with happiness, love, laughter and beautiful memories.';
+const MSG2 = 'May all your dreams come true and may every new year of your life bring you endless happiness.';
+const MSG3 = 'Keep smiling, keep shining, and always be the beautiful person you are.';
+
+function cakeIcon(x, y, s, alpha, t) { ctx.save(); ctx.globalAlpha = alpha; cake(x, y, s, t, 1); ctx.restore(); }
+
+const SCENES = [
+  { a: 0, b: 5, fi: 0, draw: sceneIntro },
+  { a: 5, b: 10, draw: sceneName },
+  { a: 10, b: 17.5, draw: (t, a) => photoScene(0, T.p1, t, a, (lt, al) => {
+      const k = easeOut((lt - .5) / 1);
+      fancyText('Happy Birthday,', W / 2, 1520, { font: 'GreatVibes', size: 120, fill: 'rose', alpha: k * al, blur: (1 - k) * 12, glow: 30, glowColor: 'rgba(255,110,190,0.85)' });
+      const k2 = easeOut((lt - 1.2) / 1.1);
+      fancyText('Kaveri!', W / 2 - 40, 1680, { font: 'GreatVibes', size: 170, alpha: k2 * al, scale: lerp(1.2, 1, k2), blur: (1 - k2) * 12, glow: 44, shimmer: (lt - 2.4) / 1.4 });
+      cakeIcon(W / 2 + 250, 1745, .2 * easeBack((lt - 2) / .6), al * clamp((lt - 2) / .3), lt + 10);
+      sparkle(W / 2 - 300, 1650, 90 * easeBack((lt - 2.2) / .6), al, lt);
+    }) },
+  { a: 17.5, b: 25, draw: (t, a) => photoScene(1, T.p2, t, a, (lt, al) => { paragraph(MSG1, W / 2, 1630, 66, 17.5 + .6, t, al); }) },
+  { a: 25, b: 32.5, draw: (t, a) => photoScene(2, T.p3, t, a, (lt, al) => { paragraph(MSG2, W / 2, 1630, 66, 25 + .6, t, al); }) },
+  { a: 32.5, b: 40, draw: (t, a) => photoScene(3, T.p4, t, a, (lt, al) => {
+      paragraph(MSG3, W / 2, 1610, 70, 32.5 + .6, t, al, { fill: 'gold', maxW: 860 });
+      const k = easeBack((lt - 2.2) / .6);
+      sparkle(W / 2 + 330, 1720, 120 * k, al * clamp(k), lt); sparkle(W / 2 - 360, 1520, 90 * k, al * clamp(k), -lt);
+    }) },
+  { a: 40, b: 45, draw: sceneDate },
+  { a: 45, b: 50, draw: sceneCollage },
+  { a: 50, b: 63, fo: 0, draw: sceneEnd },
+];
+const XF = .7; // crossfade length
+
+function renderAt(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  for (const s of SCENES) {
+    const fi = s.fi === 0 ? 0 : XF, fo = s.fo === 0 ? 0 : XF;
+    if (t < s.a - fi / 2 || t > s.b + fo / 2) continue;
+    const a = (fi ? ss(s.a - fi / 2, s.a + fi / 2, t) : 1) * (fo ? 1 - ss(s.b - fo / 2, s.b + fo / 2, t) : 1);
+    if (a <= 0.001) continue;
+    ctx.save(); ctx.globalAlpha = 1;
+    if (a < 1) {
+      // draw into a layer so the whole scene crossfades cleanly
+      LAYERC.setTransform(1, 0, 0, 1, 0, 0); LAYERC.clearRect(0, 0, W, H);
+      const prev = ctx; swapCtx(LAYERC); s.draw(t, 1); swapCtx(prev);
+      ctx.globalAlpha = a; ctx.drawImage(LAYER, 0, 0);
+    } else s.draw(t, 1);
+    ctx.restore();
+  }
+  // transition flashes on cuts
+  for (const c of CUTS) {
+    const d = t - c; if (Math.abs(d) > .5) continue;
+    const f = Math.exp(-Math.pow(d / .16, 2));
+    ctx.save(); ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = f * (c === 5 ? .95 : .55);
+    const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, H * .8);
+    g.addColorStop(0, 'rgba(255,244,220,1)'); g.addColorStop(.5, 'rgba(255,190,150,0.6)'); g.addColorStop(1, 'rgba(200,120,255,0.2)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+    // diagonal sparkle sweep
+    const k = (d + .5);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 26; i++) {
+      const px = -200 + k * (W + 400) + Math.sin(i * 12.9) * 160, py = (i / 26) * H;
+      const s = 20 + (i % 5) * 10; ctx.globalAlpha = Math.sin(k * Math.PI) * .9;
+      ctx.drawImage(i % 3 ? SPR.goldHard : SPR.pink, px - s / 2, py - s / 2, s, s);
+    }
+    ctx.restore();
+  }
+  // global fade in/out
+  const fade = ss(0, .8, t) * (1 - ss(61.6, 63, t));
+  if (fade < 1) { ctx.save(); ctx.globalAlpha = 1 - fade; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+}
+const LAYER = mk(W, H), LAYERC = LAYER.getContext('2d');
+let ctxMain = ctx;
+function swapCtx(c) { ctx = c; }
+
+window.__ready = (async () => {
+  await Promise.all([
+    document.fonts.load('100px GreatVibes'), document.fonts.load('700 100px Cinzel'),
+    document.fonts.load('italic 500 100px Cormorant')]);
+  await preparePhotos();
+  window.renderAt = renderAt;
+  window.FRAMES = Math.round(DURATION * FPS);
+  window.FPS = FPS;
+  if (location.search.includes('preview')) {
+    document.body.classList.add('preview');
+    const st = performance.now();
+    const loop = () => { renderAt(((performance.now() - st) / 1000) % DURATION); requestAnimationFrame(loop); };
+    loop();
+  } else renderAt(0);
+  return true;
+})();
+</script>
+</body>
+</html>
