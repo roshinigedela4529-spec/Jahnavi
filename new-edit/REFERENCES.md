@@ -21,5 +21,5 @@ Reference reels for the look, pacing and motion-graphics style of the edit.
 - Shiva Reddy Chinthalapally: https://share.google/20A4AqmgYOiko87vi
 
 ## Local copies
-Downloaded reference clips (MP4) go in `edit/references/` so the pipeline
+Downloaded reference clips (MP4) go in `new-edit/references/` so the edit
 can be compared against them frame by frame.
